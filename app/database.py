@@ -45,11 +45,10 @@ ON results(batch_id, status);
 
 @asynccontextmanager
 async def get_db(db_path: str | None = None):
-    """Async context manager that opens a WAL-mode aiosqlite connection."""
+    """Async context manager that opens an aiosqlite connection."""
     path = db_path or settings.DB_PATH
     async with aiosqlite.connect(path) as db:
         db.row_factory = aiosqlite.Row
-        await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA foreign_keys=ON")
         yield db
 
@@ -57,8 +56,11 @@ async def get_db(db_path: str | None = None):
 # ── Init ──────────────────────────────────────────────────────────────────────
 
 async def init_db(db_path: str | None = None) -> None:
-    """Create tables and index if they don't exist."""
+    """Create tables and index. Sets WAL mode once at startup."""
     async with get_db(db_path) as db:
+        # WAL is a database-level persistent setting — set it once here,
+        # not on every connection open.
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.execute(_CREATE_BATCHES)
         await db.execute(_CREATE_RESULTS)
         await db.execute(_CREATE_INDEX)
@@ -105,18 +107,19 @@ async def mark_batch_processing(batch_id: str, db_path: str | None = None) -> No
 
 
 async def mark_batch_done(batch_id: str, db_path: str | None = None) -> None:
-    """Set final status to 'completed' or 'partial' based on failed count."""
+    """Set final status atomically to 'completed' or 'partial' based on failed count.
+
+    Uses a single CASE statement to avoid a TOCTOU race between reading the
+    failed counter and writing the status under concurrent worker writes.
+    """
     now = datetime.now(timezone.utc).isoformat()
     async with get_db(db_path) as db:
-        async with db.execute(
-            "SELECT failed FROM batches WHERE id = ?", (batch_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-
-        status = "partial" if row and row["failed"] > 0 else "completed"
         await db.execute(
-            "UPDATE batches SET status = ?, finished_at = ? WHERE id = ?",
-            (status, now, batch_id),
+            """UPDATE batches
+               SET status      = CASE WHEN failed > 0 THEN 'partial' ELSE 'completed' END,
+                   finished_at = ?
+               WHERE id = ?""",
+            (now, batch_id),
         )
         await db.commit()
 
