@@ -1,5 +1,3 @@
-from functools import lru_cache
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,7 +10,7 @@ class Settings(BaseSettings):
     BASE_BACKOFF: float = 1.0  # seconds; doubles each retry
 
     # Mock inference endpoint
-    MOCK_RATE_LIMIT_PCT: float = 0.20  # fraction of requests that return 429
+    MOCK_RATE_LIMIT_PCT: float = 0.20
     MOCK_INFERENCE_URL: str = "http://localhost:8000/mock/infer"
 
     # Storage
@@ -26,6 +24,4 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE_MB: int = 10
 
 
-@lru_cache
-def get_settings() -> Settings:
-    return Settings()
+settings = Settings()
