@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import random
 
@@ -39,6 +40,6 @@ async def mock_infer(payload: InferRequest) -> Response:
     logger.info("mock infer ok prompt_preview=%.30s", payload.prompt)
     return Response(
         status_code=200,
-        content=__import__("json").dumps(result),
+        content=json.dumps(result),
         media_type="application/json",
     )

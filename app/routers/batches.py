@@ -1,9 +1,9 @@
 import json
 import logging
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Query, Request, UploadFile
 
 from app.config import settings
 from app.database import create_batch, get_batch, get_results
@@ -114,9 +114,9 @@ async def get_batch_status(batch_id: str) -> BatchStatus:
 @router.get("/{batch_id}/results", response_model=BatchResults)
 async def get_batch_results(
     batch_id: str,
-    status: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
+    status: Optional[Literal["completed", "failed"]] = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
 ) -> BatchResults:
     batch = await get_batch(batch_id)
     if batch is None:

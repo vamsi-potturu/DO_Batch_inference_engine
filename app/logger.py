@@ -37,7 +37,3 @@ def setup_logging() -> None:
 
     # suppress uvicorn access logs — middleware handles request logging
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-
-
-def get_logger(name: str) -> logging.Logger:
-    return logging.getLogger(name)
