@@ -25,7 +25,9 @@ class BatchAccepted(BaseModel):
 
 
 class BatchStatus(BaseModel):
-    batch_id: str
+    model_config = {"populate_by_name": True}
+
+    batch_id: str = Field(validation_alias="id")
     status: str
     total: int
     completed: int
