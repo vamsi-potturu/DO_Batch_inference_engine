@@ -6,8 +6,7 @@ import structlog
 
 from app.config import Settings
 
-# Bound per HTTP request by middleware in main.py.
-# Engine binds batch_id instead for background tasks.
+# Set per HTTP request by middleware. Background tasks bind batch_id instead.
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 
 
@@ -16,37 +15,34 @@ def _add_request_id(logger: object, method: str, event_dict: dict) -> dict:
     return event_dict
 
 
-def configure_logging(settings: Settings) -> None:
-    """Configure structlog JSON logging once at startup.
+# Shared pre-processors applied to every log line regardless of origin.
+_PRE_PROCESSORS = [
+    structlog.contextvars.merge_contextvars,
+    _add_request_id,
+    structlog.processors.add_log_level,
+    structlog.processors.TimeStamper(fmt="iso", utc=True),
+]
 
-    All log lines — including uvicorn and httpx — are emitted as JSON to stdout.
+
+def configure_logging(settings: Settings) -> None:
+    """Configure JSON logging once at startup.
+
+    All log lines — app code, uvicorn, httpx — are emitted as JSON to stdout.
     """
     level = logging.getLevelName(settings.LOG_LEVEL)
 
-    processors = [
-        structlog.contextvars.merge_contextvars,
-        _add_request_id,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso", utc=True),
-        structlog.processors.JSONRenderer(),
-    ]
-
+    # structlog chain: used by app code via get_logger()
     structlog.configure(
-        processors=processors,
+        processors=[*_PRE_PROCESSORS, structlog.processors.JSONRenderer()],
         wrapper_class=structlog.make_filtering_bound_logger(level),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
-    # Route stdlib loggers (uvicorn, httpx) through the same JSON format
+    # stdlib chain: routes uvicorn/httpx logs through the same JSON format
     formatter = structlog.stdlib.ProcessorFormatter(
-        foreign_pre_chain=[
-            structlog.contextvars.merge_contextvars,
-            _add_request_id,
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso", utc=True),
-        ],
+        foreign_pre_chain=_PRE_PROCESSORS,
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             structlog.processors.JSONRenderer(),
