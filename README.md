@@ -7,87 +7,62 @@ A production-grade FastAPI service that accepts a batch of AI prompts, processes
 ## Architecture
 
 ```mermaid
-flowchart TD
-    Client(["Client"])
+flowchart LR
+    Client(["👤 Client"])
 
-    subgraph API["FastAPI — app/main.py"]
-        RL["Rate Limiter\n10 req/min per IP\n(slowapi)"]
-        POST["POST /batches\n(HTTP 202 — immediate)"]
-        GET_S["GET /batches/{id}\n(status + progress)"]
-        GET_R["GET /batches/{id}/results\n(paginated, filterable)"]
-        BG["BackgroundTasks.add_task\n(process_batch)"]
+    subgraph API["API Layer"]
+        RL{"Rate limit\nOK?"}
+        POST["POST /batches\nreturns 202 instantly"]
+        GET["GET /batches/{id}\nGET /batches/{id}/results"]
     end
 
-    subgraph Engine["Batch Engine — app/services/engine.py"]
-        SEM["asyncio.Semaphore\nMAX_WORKERS slots"]
-        GATHER["asyncio.gather\n(fan-out all prompts)"]
-    end
-
-    subgraph Worker["Worker — app/worker.py"]
+    subgraph BG["Background Processing"]
         direction TB
-        W1["call_inference(prompt, index)"]
-        RETRY{"attempt < MAX_RETRIES?"}
-        HTTP["httpx.AsyncClient\nPOST /mock/infer"]
-        OK{"HTTP 200?"}
-        R429{"HTTP 429?"}
-        BACKOFF["exponential backoff\n+ jitter\nBase × 2^attempt + rand(0, 0.5)"]
-        FAIL["raise InferenceMaxRetriesError"]
-
-        W1 --> RETRY
-        RETRY -->|yes| HTTP
-        RETRY -->|no| FAIL
-        HTTP --> OK
-        OK -->|yes| W1_DONE["return result, retries"]
-        OK -->|no| R429
-        R429 -->|yes| BACKOFF --> RETRY
-        R429 -->|no| RETRY
+        SEM["Semaphore\nmax 20 workers"]
+        W1["Worker 1"]
+        W2["Worker 2"]
+        WN["Worker N…"]
+        AGG["Aggregate\ncompleted / partial / failed"]
     end
 
-    subgraph Mock["Mock Endpoint — app/mock_api.py"]
-        MOCK["POST /mock/infer\n20% chance → 429\nelse → inference result + 50-150 ms delay"]
+    subgraph WL["Per-Worker Retry Loop"]
+        direction TB
+        CALL["Call /mock/infer"]
+        S200["✅ 200 → save result"]
+        S429["⚠️ 429 → backoff & retry\n(up to 5 attempts)"]
+        SERR["❌ exhausted → save error"]
     end
 
     subgraph DB["SQLite — WAL mode"]
-        T_BATCH[("batches\nid, status, total,\ncompleted, failed")]
-        T_RESULTS[("results\nbatch_id, prompt_index,\noutput, retries, error")]
+        TB[("batches")]
+        TR[("results")]
     end
 
-    Client -->|"POST /batches\n{prompts:[…]}"| RL
-    RL -->|allowed| POST
-    RL -->|exceeded| E429["429 rate_limit_exceeded"]
-    POST -->|"create_batch()"| T_BATCH
-    POST -->|"schedule"| BG
+    Client -->|"{ prompts:[…] }"| RL
+    RL -->|"allowed"| POST
+    RL -->|"blocked"| E429["429 Too Many Requests"]
     POST -->|"202 + batch_id"| Client
-
-    BG --> Engine
-    SEM --> GATHER
-    GATHER -->|"one task per prompt"| Worker
-
-    W1_DONE -->|"save_result()"| T_RESULTS
-    W1_DONE -->|"completed +1"| T_BATCH
-    FAIL -->|"save_error()"| T_RESULTS
-    FAIL -->|"failed +1"| T_BATCH
-
-    Worker --> Mock
-
-    GATHER -->|"all done"| AGG["Aggregation\nmark_batch_done()\nATOMIC:\nCASE WHEN failed > 0\n  THEN 'partial'\n  ELSE 'completed'"]
-    AGG --> T_BATCH
-
-    Client -->|"GET /batches/{id}"| GET_S
-    GET_S --> T_BATCH
-    Client -->|"GET /batches/{id}/results"| GET_R
-    GET_R --> T_RESULTS
+    POST --> SEM
+    SEM --> W1 & W2 & WN
+    W1 & W2 & WN --> CALL
+    CALL --> S200 & S429 & SERR
+    S200 & S429 & SERR --> AGG
+    AGG --> TB
+    S200 --> TR
+    SERR --> TR
+    Client -->|"poll"| GET
+    GET --> TB & TR
 ```
 
-### Request lifecycle
+### How it works — 5 steps
 
-| Phase | What happens |
-|-------|-------------|
-| **Accept** | Validate input → insert batch row (`status=accepted`) → schedule background task → return `202 + batch_id` immediately |
-| **Fan-out** | `process_batch` acquires a semaphore slot per prompt and fans all tasks out with `asyncio.gather` |
-| **Worker / retry loop** | Each worker calls the inference endpoint; on `429` it backs off with `BASE_BACKOFF × 2^attempt + jitter` and retries up to `MAX_RETRIES` times |
-| **Persist** | Success → `results` row + `completed` counter incremented; exhausted retries → `results` error row + `failed` counter incremented |
-| **Aggregate** | After `gather`, a single atomic SQL `CASE` statement sets the batch to `completed` or `partial` — no TOCTOU race |
+| Step | What happens |
+|------|-------------|
+| **1. Accept** | Request validated → batch row created → `202 + batch_id` returned immediately, no waiting |
+| **2. Fan-out** | Background task fans every prompt out to a worker pool bounded by `asyncio.Semaphore(MAX_WORKERS)` |
+| **3. Retry loop** | Each worker calls the inference endpoint. On `429` it sleeps `BASE_BACKOFF × 2^attempt + jitter` and retries (up to `MAX_RETRIES` times) |
+| **4. Persist** | Success → result row saved + `completed` counter ticked. Exhausted retries → error row saved + `failed` counter ticked |
+| **5. Aggregate** | After all workers finish, one atomic SQL statement sets the final status: `completed` if all passed, `partial` if some failed, `failed` if the engine itself crashed |
 
 ---
 
