@@ -4,11 +4,11 @@ from typing import Optional
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Request, UploadFile
-from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.database import create_batch, get_batch, get_results
 from app.exceptions import BatchNotFoundError, InvalidInputError
+from app.limiter import limiter
 from app.schemas import BatchAccepted, BatchResults, BatchStatus, PromptResult
 from app.services.engine import process_batch
 
@@ -24,6 +24,7 @@ def _get_http_client(request: Request) -> httpx.AsyncClient:
 # ── POST /batches ─────────────────────────────────────────────────────────────
 
 @router.post("", status_code=202, response_model=BatchAccepted)
+@limiter.limit(settings.RATE_LIMIT)
 async def create_batch_endpoint(
     request: Request,
     background_tasks: BackgroundTasks,

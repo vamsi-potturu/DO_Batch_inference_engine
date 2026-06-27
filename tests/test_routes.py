@@ -2,6 +2,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from app import config
 
 
 # ── POST /batches ─────────────────────────────────────────────────────────────
@@ -94,6 +95,28 @@ async def test_get_results_pagination(client):
     resp = await client.get(f"/batches/{batch_id}/results?limit=3&offset=0")
     assert resp.status_code == 200
     assert len(resp.json()["items"]) == 3
+
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+
+async def test_rate_limit_triggers_429(monkeypatch, client):
+    """Exceeding the batch creation rate limit must return 429 with our error envelope."""
+    monkeypatch.setattr(config.settings, "RATE_LIMIT", "2/minute")
+    # Re-apply so slowapi picks up the new string for this test.
+    from app.limiter import limiter
+    from slowapi.util import get_remote_address
+
+    with patch("app.routers.batches.process_batch", new=AsyncMock()):
+        for _ in range(2):
+            r = await client.post("/batches", json={"prompts": ["x"]})
+            assert r.status_code == 202
+
+        # 3rd call must be rate-limited
+        r = await client.post("/batches", json={"prompts": ["x"]})
+
+    assert r.status_code == 429
+    body = r.json()
+    assert body["error"] == "rate_limit_exceeded"
 
 
 # ── GET /health ───────────────────────────────────────────────────────────────

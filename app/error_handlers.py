@@ -3,6 +3,7 @@ import logging
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 
 from app.exceptions import (
     BatchAlreadyProcessingError,
@@ -45,6 +46,17 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
         content={
             "error": "validation_error",
             "message": f"Invalid fields [{fields}]: {message}",
+            "batch_id": None,
+        },
+    )
+
+
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "rate_limit_exceeded",
+            "message": f"Too many requests. Limit: {exc.detail}",
             "batch_id": None,
         },
     )

@@ -23,5 +23,8 @@ class Settings(BaseSettings):
     MAX_PROMPTS: int = 1000
     MAX_FILE_SIZE_MB: int = 10
 
+    # Rate limiting (applied to POST /batches per client IP)
+    RATE_LIMIT: str = "10/minute"
+
 
 settings = Settings()
